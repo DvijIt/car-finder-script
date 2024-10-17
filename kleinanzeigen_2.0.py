@@ -2,12 +2,31 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+#
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+# from selenium import webdriver
+# from selenium.webdriver.chrome.service import Service
+# from selenium.webdriver.common.by import By
+# from webdriver_manager.chrome import ChromeDriverManager
+#
 from telegram import Bot
 import time
+
+# Налаштування для Selenium (безголовний режим)
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--disable-gpu")
+chrome_options.add_argument("--no-sandbox")
+
+# Вказуємо шлях до ChromeDriver (завантажте його з https://chromedriver.chromium.org/)
+service = Service(executable_path="./chromedriver/chromedriver")
+driver = webdriver.Chrome(service=service, options=chrome_options)
+
+# Запуск браузера через Selenium
+# driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 
 # Налаштування
 TOKEN = "7493276934:AAFUgPhdaQMGElAjZbSeYwvSEsIVvxCBJTE"
@@ -17,20 +36,24 @@ PRICE_FILTER_MIN = 1500
 PRICE_FILTER_MAX = 3500
 JSON_FILE = 'cars_data.json'
 
-# Змінні для відстеження
-last_car_id = None
-last_sent_time = None
-last_price = None
-
 # Ініціалізація Telegram бота
 bot = Bot(token=TOKEN)
-
-# Запуск браузера через Selenium
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 
 # Асинхронна функція для відправлення повідомлення в Telegram
 async def send_telegram_message(text):
     await bot.send_message(chat_id=CHAT_ID, text=text)
+
+# Функція для збереження даних у JSON-файл
+def save_cars_to_json(cars):
+    with open(JSON_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cars, f, ensure_ascii=False, indent=4)
+
+# Функція для завантаження автомобілів із JSON-файлу
+def load_cars_from_json():
+    if os.path.exists(JSON_FILE):
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
 # Функція для отримання останніх доданих автомобілів через Selenium
 def get_latest_cars():
@@ -88,50 +111,56 @@ def get_latest_cars():
 
     return cars
 
-# Функція для збереження даних у JSON-файл
-def save_cars_to_json(cars):
-    with open(JSON_FILE, 'w', encoding='utf-8') as f:
-        json.dump(cars, f, ensure_ascii=False, indent=4)
-
-# Функція для завантаження автомобілів із JSON-файлу
-def load_cars_from_json():
-    if os.path.exists(JSON_FILE):
-        with open(JSON_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
 # Асинхронна функція для перевірки нових автомобілів
 async def check_for_new_cars():
-    global last_car_id, last_sent_time, last_price
+    saved_cars = load_cars_from_json()  # Завантажуємо збережені авто
+    latest_cars = get_latest_cars()  # Отримуємо останні авто
 
-    # Завантажуємо попередні автомобілі з JSON
-    saved_cars = load_cars_from_json()
+    # Фільтрація нових автомобілів
+    new_cars = [car for car in latest_cars if car['id'] not in saved_cars]
+    # or car['price'] != saved_cars[car['id']]['price']
+    if new_cars:
+        print("Знайдено нові автомобілі:")
+        for car in new_cars:
+            # Зробити перегляд по латест карс
+            status = 'Ціна змінилась' # if car['price'] != saved_cars[car['id']]['price'] else "Новий автомобіль"
 
-    while True:
-        cars = get_latest_cars()
-        if cars:
-            for car in cars:
-                car_id = car.get("id")
-                car_price = car.get("price")
-                car_title = car.get("title")
-                car_location = car.get("location")
-                car_link = car.get("link")
-                car_date = car.get("date")
+            saved_cars[car['id']] = car
+            print(f"Назва: {car['title']}, Ціна: {car['price']}, Дата: {car['date']}, Посилання: {car['link']}")
 
-                # Перевірка, чи це новий автомобіль або змінилася ціна
-                if car_id not in saved_cars or car_price != saved_cars[car_id]["price"]:
-                    saved_cars[car_id] = car  # Оновлюємо запис автомобіля в JSON-даних
-                    save_cars_to_json(saved_cars)  # Зберігаємо у файл
+            # Можна додати логіку для відправлення в Telegram або інші дії
+            message = f"{status}:\n\nНазва: {car['title']}\nЦіна: {car['price']} EUR\nДата: {car['date']}\nЛокація: {car['location']}\nПосилання: {car['link']}"
+            await send_telegram_message(message)
+        
+        save_cars_to_json(saved_cars)  # Зберігаємо нові дані у файл
+    else:
+        print("Немає нових автомобілів")
 
-                    # Перевірка на час останньої відправки повідомлення
-                    if last_sent_time is None or datetime.now() - last_sent_time > timedelta(days=1):
-                        last_sent_time = datetime.now()
-                        message = f"Новий автомобіль:\n\nНазва: {car_title}\nЦіна: {car_price} EUR\nДата: {car_date}\nЛокація: {car_location}\nПосилання: {car_link}"
-                        await send_telegram_message(message)
-                        print("Відправлено новий автомобіль у Telegram:", message)
+    # while True:
+    #     cars = get_latest_cars()
+    #     if cars:
+    #         for car in cars:
+    #             car_id = car.get("id")
+    #             car_price = car.get("price")
+    #             car_title = car.get("title")
+    #             car_location = car.get("location")
+    #             car_link = car.get("link")
+    #             car_date = car.get("date")
 
-        # Затримка на 30 секунд перед повторним запитом
-        await asyncio.sleep(30)
+    #             # Перевірка, чи це новий автомобіль або змінилася ціна
+    #             if car_id not in saved_cars or car_price != saved_cars[car_id]["price"]:
+    #                 saved_cars[car_id] = car  # Оновлюємо запис автомобіля в JSON-даних
+    #                 save_cars_to_json(saved_cars)  # Зберігаємо у файл
+
+    #                 # Перевірка на час останньої відправки повідомлення
+    #                 if last_sent_time is None or datetime.now() - last_sent_time > timedelta(days=1):
+    #                     last_sent_time = datetime.now()
+    #                     message = f"Новий автомобіль:\n\nНазва: {car_title}\nЦіна: {car_price} EUR\nДата: {car_date}\nЛокація: {car_location}\nПосилання: {car_link}"
+    #                     await send_telegram_message(message)
+    #                     print("Відправлено новий автомобіль у Telegram:", message)
+
+    #     # Затримка на 30 секунд перед повторним запитом
+    #     await asyncio.sleep(30)
 
 # Основна функція для запуску асинхронного циклу
 def main():
@@ -139,6 +168,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+    # Після завершення обов'язково закрийте браузер
+    driver.quit()
 
-# Після завершення обов'язково закрийте браузер
-driver.quit()
