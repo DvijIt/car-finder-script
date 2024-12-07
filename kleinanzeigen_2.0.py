@@ -14,6 +14,7 @@ from selenium.webdriver.common.by import By
 #
 from telegram import Bot
 import time
+import threading
 
 # Налаштування для Selenium (безголовний режим)
 chrome_options = Options()
@@ -38,6 +39,23 @@ JSON_FILE = 'cars_data.json'
 
 # Ініціалізація Telegram бота
 bot = Bot(token=TOKEN)
+
+# Поточна дата та дата, що дорівнює двом дням тому
+two_days_ago = datetime.now() - timedelta(days=2)
+
+# Функція для перетворення дати
+def parse_date(date_str):
+    if "Gestern" in date_str:
+        # Якщо дата містить "Gestern" (вчора)
+        return datetime.now() - timedelta(days=1)
+    elif "Heute" in date_str:
+        # Якщо дата містить "Heute" (сьогодні)
+        return datetime.now()
+    else:
+        # Якщо формат дати стандартний (дд.мм.рррр)
+        return datetime.strptime(date_str, "%d.%m.%Y")
+    
+
 
 # Асинхронна функція для відправлення повідомлення в Telegram
 async def send_telegram_message(text):
@@ -89,85 +107,130 @@ def get_latest_cars():
         # Дата додавання оголошення
         date_element = article.find_element(By.CLASS_NAME, 'aditem-main--top--right')
         date_added = date_element.text if date_element else "Дата не вказана"
-
-        date_added.replace("heute", "Сьогодні")
+        
+        date_added = parse_date(date_added).strftime("%d.%m.%Y")
 
         # Локація
         location = article.find_element(By.CLASS_NAME, 'aditem-main--top--left').text
         
         # Парсинг ціни
         price = int(''.join(filter(str.isdigit, price)))
-
-        # Фільтрація по ціні
-        if PRICE_FILTER_MIN <= price <= PRICE_FILTER_MAX:
-            cars.append({
-                "id": car_id,
-                "title": title,
-                "price": price,
-                "location": location,
-                "link": link,
-                "date": date_added
-            })
+        
+        if parse_date(date_added) >= two_days_ago:
+            # Фільтрація по ціні
+            if PRICE_FILTER_MIN <= price <= PRICE_FILTER_MAX:
+                cars.append({
+                    "id": car_id,
+                    "title": title,
+                    "price": price,
+                    "location": location,
+                    "link": link,
+                    "date": date_added
+                })
 
     return cars
 
+def parseDateSavedCars():
+    cars = load_cars_from_json()
+    for car in cars.values():
+        cars[car['id']]['date'] = parse_date(cars[car['id']]['date']).strftime("%d.%m.%Y")
+        
+    # print(cars)
+    save_cars_to_json(cars)
+    
 # Асинхронна функція для перевірки нових автомобілів
-async def check_for_new_cars():
+async def check_for_new_cars_and_send():
     saved_cars = load_cars_from_json()  # Завантажуємо збережені авто
     latest_cars = get_latest_cars()  # Отримуємо останні авто
 
-    # Фільтрація нових автомобілів
-    new_cars = [car for car in latest_cars if car['id'] not in saved_cars]
-    # or car['price'] != saved_cars[car['id']]['price']
-    if new_cars:
-        print("Знайдено нові автомобілі:")
-        for car in new_cars:
-            # Зробити перегляд по латест карс
-            status = 'Ціна змінилась' # if car['price'] != saved_cars[car['id']]['price'] else "Новий автомобіль"
+    cars_for_send = []
 
+    for car in latest_cars:
+        entity = car.copy()
+        if car['id'] not in saved_cars:
+            entity['status'] = 'new'
+            cars_for_send.append(entity)
+        else:
+            if car['price'] != saved_cars[car['id']]['price']:
+                entity['status'] = 'updated'
+                cars_for_send.append(entity)
+            else:
+                entity['status'] = 'sent'
+
+    if cars_for_send:
+        statuses = { 'updated': 'Ціна змінилась', 'new': 'Новий автомобіль' }
+
+        for car in cars_for_send:
+            status = statuses.get(car['status'])
+            message = f"\n{status}:\nНазва: {car['title']}\nЦіна: {car['price']} EUR\nДата: {car['date']}\nЛокація: {car['location']}\nПосилання: {car['link']}"
+            car['status'] = 'sent'
             saved_cars[car['id']] = car
-            print(f"Назва: {car['title']}, Ціна: {car['price']}, Дата: {car['date']}, Посилання: {car['link']}")
-
-            # Можна додати логіку для відправлення в Telegram або інші дії
-            message = f"{status}:\n\nНазва: {car['title']}\nЦіна: {car['price']} EUR\nДата: {car['date']}\nЛокація: {car['location']}\nПосилання: {car['link']}"
-            await send_telegram_message(message)
-        
-        save_cars_to_json(saved_cars)  # Зберігаємо нові дані у файл
+            print(message)
+            # await send_telegram_message(message)
     else:
-        print("Немає нових автомобілів")
+        print('No new or changed price car')
+        
+    save_cars_to_json(saved_cars) # Зберігаємо нові дані у файл
 
-    # while True:
-    #     cars = get_latest_cars()
-    #     if cars:
-    #         for car in cars:
-    #             car_id = car.get("id")
-    #             car_price = car.get("price")
-    #             car_title = car.get("title")
-    #             car_location = car.get("location")
-    #             car_link = car.get("link")
-    #             car_date = car.get("date")
+    # # Затримка на 30 секунд перед повторним запитом
+    # await asyncio.sleep(30)
 
-    #             # Перевірка, чи це новий автомобіль або змінилася ціна
-    #             if car_id not in saved_cars or car_price != saved_cars[car_id]["price"]:
-    #                 saved_cars[car_id] = car  # Оновлюємо запис автомобіля в JSON-даних
-    #                 save_cars_to_json(saved_cars)  # Зберігаємо у файл
 
-    #                 # Перевірка на час останньої відправки повідомлення
-    #                 if last_sent_time is None or datetime.now() - last_sent_time > timedelta(days=1):
-    #                     last_sent_time = datetime.now()
-    #                     message = f"Новий автомобіль:\n\nНазва: {car_title}\nЦіна: {car_price} EUR\nДата: {car_date}\nЛокація: {car_location}\nПосилання: {car_link}"
-    #                     await send_telegram_message(message)
-    #                     print("Відправлено новий автомобіль у Telegram:", message)
+async def update_cars_database():
+    saved_cars = load_cars_from_json()  # Завантажуємо збережені авто
+    latest_cars = get_latest_cars()  # Отримуємо останні авто
 
-    #     # Затримка на 30 секунд перед повторним запитом
-    #     await asyncio.sleep(30)
+    for car in latest_cars:
+        if car['id'] not in saved_cars:
+            car['status'] = 'new'
+        else:
+            if car['price'] != saved_cars[car['id']]['price']:
+                car['status'] = 'update'
+            else:
+                car['status'] = 'sent'
+
+        saved_cars[car['id']] = car
+
+    save_cars_to_json(saved_cars) # Зберігаємо нові дані у файл
+    
+
+async def delete_old_cars():
+    saved_cars = load_cars_from_json()  # Завантажуємо збережені авто
+    
+    if len(saved_cars) == 0:
+        return
+
+    # Фільтрація словника для залишення тільки елементів з датами від сьогодні і за 2 дні
+    recent_entries = {
+        key: value
+        for key, value in saved_cars.items()
+        if parse_date(value["date"]) >= two_days_ago
+    }
+    
+    save_cars_to_json(recent_entries) # Зберігаємо нові дані у файл
+
+async def send_cars_to_telegram():
+    cars = load_cars_from_json()
+    statuses = { 'updated': 'Ціна змінилась', 'new': 'Новий автомобіль' }
+    for car in cars.values():
+        status = statuses.get(car['status'])
+        message = f"{status}:\nНазва: {car['title']}\nЦіна: {car['price']} EUR\nДата: {car['date']}\nЛокація: {car['location']}\nПосилання: {car['link']}"
+        print(message)
+        # await send_telegram_message(message)
 
 # Основна функція для запуску асинхронного циклу
 def main():
-    asyncio.run(check_for_new_cars())
-
+    # asyncio.run(update_cars_database())
+    asyncio.run(delete_old_cars())
+    asyncio.run(check_for_new_cars_and_send())
+    
+def second():
+    asyncio.run(delete_old_cars())
+    
 if __name__ == '__main__':
-    main()
-    # Після завершення обов'язково закрийте браузер
+    while True:
+        print('\nRequest')
+        main()
+        time.sleep(30)
+        
     driver.quit()
-
